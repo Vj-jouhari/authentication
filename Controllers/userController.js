@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 const saltRounds = 10;
 const jwt = require("jsonwebtoken");
 const secretKey = process.env.JWT_SECRET;
-
+const logger = require('../utils/log');
 
 exports.registerUser = async (req, res) =>{
     try {
@@ -13,6 +13,7 @@ exports.registerUser = async (req, res) =>{
       const isEmail = await UsersModel.findOne({email:email});
       // check email existence
       if(isEmail){
+        logger.info('Email Exist Already', {data:req.body});
         res.status(409).json({
           status: 409,
           message: 'User already exists with the provided email',
@@ -26,8 +27,8 @@ exports.registerUser = async (req, res) =>{
           phoneNumber : phoneNumber,
           otp : randomOtp
         });
-        
         saveUser.save().then(val => {
+          logger.info('Registration Successfull', {data:val});
           res.status(200).json({
             status: 200,
             message: 'Registration Successfull',
@@ -36,6 +37,7 @@ exports.registerUser = async (req, res) =>{
         })
       }
     } catch (error) {
+    logger.info('Something Went wrong', error);
       res.status(500).json({
         status: 500,
         message: 'Internal server error',
@@ -49,6 +51,7 @@ exports.login = async (req, res, next) => {
   try {
     const user = await UsersModel.findOne({email:email});
     if (!user || !bcrypt.compareSync(password, user.password)) {
+      logger.info('Login Failed, Either Email or Password doesnot match with the record', req.body);
       res.status(401).json({
         status: 401,
         message: "You are not authorized",
@@ -56,20 +59,29 @@ exports.login = async (req, res, next) => {
       return;
     }
     if(!(user.isStatus && user.isEmailVerified)){
+      logger.info('Not verified or Status is  Inactive, Please Verify', req.body);
       res.status(401).json({
         status: 401,
         message: "You are not authorized",
       });
       return;
     }
-    const token = jwt.sign({ userId: user._id, email: user.email }, secretKey, { expiresIn: '1h' });
-    res.status(201).json({
-      status: 201,
-      message: "You are  authorized",
-      data:token
-    });
-    
+    try {
+      const otpSend = await sendOtp(user);
+      res.status(200).json({
+        status: 200,
+        message: "OTP send Successfully",
+      });
+    } catch (otpError) {
+      console.error('Error sending OTP:', otpError);
+      return res.status(500).json({
+        status: 500,
+        message: 'Error sending OTP',
+        error: otpError.message,
+      });
+    }    
   } catch (error) {
+    logger.info('Something Went wrong', error);
     res.status(500).json({
       status: 500,
       message: 'Internal server error',
@@ -78,28 +90,81 @@ exports.login = async (req, res, next) => {
   }
 }
 
-
 exports.dashboard = async (req, res, next)=>{
-  res.status(200).json({
-    status: 200,
-    message: " authorized",
-  });
+  try {
+    const userDetail = await UsersModel.findOne({email:req.user.email},{password:0});
+    if(!userDetail){
+      res.status(400).json({
+        status:400,
+        message:"Something went wrong"
+      })
+    }
+    res.status(200).json({
+      status: 200,
+      message: "Authorized User",
+      data:userDetail
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 500,
+      message: error
+    });
+  }
 }
 
+const sendOtp = (data) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const accountSid = process.env.TWILIO_ACCOUNT_SID;
+      const authToken = process.env.TWILIO_AUTH_TOKEN;
+      const client = require('twilio')(accountSid, authToken);
+      const otpVerification = Math.floor(100000 + Math.random() * 900000);
+      const updatedUser = await UsersModel.findOneAndUpdate({email:data.email},{otp:otpVerification},{new:true});
+      const dynamicMessage = `Hello, ${updatedUser.name}! Your OTP is ${updatedUser.otp}`;
+      const message = await client.messages.create({
+        body: dynamicMessage,
+        from: '+19292442041',
+        to: '+919956889313',
+      });
+      resolve(message.sid);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
 
-// const verifyToken = (req, res, next) => {
-//   const token = req.headers['authorization'];
+exports.verifyOtp = async (req, res) =>{
+  const {email, otp} = req.body;
+  try {
+    const userotpDetail = await UsersModel.findOne({email:email});
+    if(!userotpDetail){
+      res.status(400).json({
+        status:400,
+        message:"Something went wrong"
+      })
+    }
+    if(userotpDetail.otp != otp){
+      res.status(400).json({
+        status:400,
+        message:"OTP Does not Match"
+      })
+    }else{
+      const token = jwt.sign({ userId: userotpDetail._id, email: userotpDetail.email }, secretKey, { expiresIn: '1h' });
+      res.status(200).json({
+        status: 200,
+        message: "OTP verified Successfully",
+        data:token
+      });
+    }
 
-  // if (!token) {
-  //   return res.status(401).json({ message: 'Unauthorized' });
-  // }
+  } catch (error) {
+    res.status(500).json({
+      status: 500,
+      message: error
+    });
+  }
+}
 
-  // jwt.verify(token, secretKey, (err, decoded) => {
-  //   if (err) {
-  //     return res.status(401).json({ message: 'Token is not valid' });
-  //   }
+exports.forgetPassword = async (req, res, next) => {
 
-  //   req.user = decoded; // Attach user information to the request
-  //   next();
-  // });
-// };
+}
